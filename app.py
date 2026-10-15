@@ -14,17 +14,54 @@ st.set_page_config(
 st.title("⚡ HR Leave & Expense Adjudicator")
 st.markdown("Automated compliance system orchestrated with **LangGraph**, **Groq (OpenAI GPT-OSS)**, and **ChromaDB RAG**.")
 
-# 1. Fetch Credentials Securely from Streamlit Secrets
+# ---------------------------------------------------------
+# 1. Automatic Database Builder (Runs inside Streamlit Cloud)
+# ---------------------------------------------------------
+@st.cache_resource
+def ensure_chroma_database():
+    """Builds and caches ChromaDB in memory/disk automatically on first run."""
+    client = chromadb.PersistentClient(path="./chroma_db")
+    collection = client.get_or_create_collection(name="hr_policies")
+    
+    # If collection is already populated, skip re-indexing
+    if collection.count() > 0:
+        return client, collection
+
+    policy_file_path = os.path.join("data", "hr_policies.txt")
+    if not os.path.exists(policy_file_path):
+        st.error(f"Missing `{policy_file_path}` in your GitHub repository!")
+        st.stop()
+
+    with open(policy_file_path, "r", encoding="utf-8") as f:
+        raw_text = f.read()
+
+    chunks = [c.strip() for c in raw_text.split("\n\n") if c.strip()]
+    chunk_ids = [f"policy_chunk_{i}" for i in range(len(chunks))]
+
+    collection.add(
+        documents=chunks,
+        ids=chunk_ids,
+        metadatas=[{"source": "HR_Policy_Handbook"} for _ in chunks]
+    )
+    return client, collection
+
+# Initialize ChromaDB on app load
+chroma_client, chroma_collection = ensure_chroma_database()
+
+# ---------------------------------------------------------
+# 2. Fetch Credentials Securely from Streamlit Secrets
+# ---------------------------------------------------------
 if "GROQ_API_KEY" not in st.secrets:
     st.error(
-        "Missing `GROQ_API_KEY`! Please configure it in `.streamlit/secrets.toml` locally, "
-        "or in the Streamlit Cloud dashboard under Settings > Secrets."
+        "Missing `GROQ_API_KEY`! Please set it in Streamlit Cloud Settings > Secrets."
     )
     st.stop()
 
 groq_api_key = st.secrets["GROQ_API_KEY"]
 
-# 2. Model Selection Sidebar
+# ---------------------------------------------------------
+# 3. Model Selector Sidebar
+# ---------------------------------------------------------
 selected_model = st.sidebar.radio(
     "Select Model Engine:",
     options=["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
@@ -32,20 +69,18 @@ selected_model = st.sidebar.radio(
     help="120B provides deeper policy reasoning; 20B provides ultra-high throughput."
 )
 
-# 3. ChromaDB Vector Store Query Helper
+# ---------------------------------------------------------
+# 4. RAG Query Function
+# ---------------------------------------------------------
 def query_hr_rag(search_query: str) -> str:
-    if not os.path.exists("./chroma_db"):
-        return "Policy database not found. Please run `python rag_setup.py` first."
-    
-    client = chromadb.PersistentClient(path="./chroma_db")
-    collection = client.get_collection(name="hr_policies")
-    results = collection.query(query_texts=[search_query], n_results=2)
-    
+    results = chroma_collection.query(query_texts=[search_query], n_results=2)
     if not results or not results["documents"][0]:
         return "No specific policy clause found."
     return "\n---\n".join(results["documents"][0])
 
-# 4. LangGraph State Definition (Standard TypedDict, No Pydantic schemas needed)
+# ---------------------------------------------------------
+# 5. LangGraph State Definition
+# ---------------------------------------------------------
 class AdjudicatorState(TypedDict):
     raw_submission: str
     parsed_items: str
@@ -53,17 +88,19 @@ class AdjudicatorState(TypedDict):
     audit_findings: str
     final_decision: str
 
-# 5. Initialize Groq Chat Model
+# ---------------------------------------------------------
+# 6. Initialize Groq Chat Model
+# ---------------------------------------------------------
 llm = ChatGroq(
     model=selected_model,
     api_key=groq_api_key,
     temperature=0.1
 )
 
-# 6. Define the 3 Agents as Graph Nodes
-
+# ---------------------------------------------------------
+# 7. Agent Nodes
+# ---------------------------------------------------------
 def agent_intake_node(state: AdjudicatorState) -> dict:
-    """Agent 1: Extracts and structures all expense line items and leave days."""
     prompt = f"""
     You are the HR Claims Intake Specialist.
     Extract every expense item and leave request from this submission into a clean, numbered list.
@@ -76,14 +113,12 @@ def agent_intake_node(state: AdjudicatorState) -> dict:
     response = llm.invoke(prompt)
     return {"parsed_items": str(response.content)}
 
-
 def agent_auditor_node(state: AdjudicatorState) -> dict:
-    """Agent 2: Retrieves policy rules from ChromaDB and audits each line item."""
     retrieved_policies = query_hr_rag(state["parsed_items"])
     
     prompt = f"""
     You are the HR Policy Compliance Auditor.
-    Audit these claim items against the retrieved company guidelines.
+    Audit these claim items against the retrieved company guidelines:
 
     Policy Guidelines:
     {retrieved_policies}
@@ -102,9 +137,7 @@ def agent_auditor_node(state: AdjudicatorState) -> dict:
         "audit_findings": str(response.content)
     }
 
-
 def agent_resolution_node(state: AdjudicatorState) -> dict:
-    """Agent 3: Drafts the executive breakdown table and the employee response letter."""
     prompt = f"""
     You are the HR Communications Officer.
     Synthesize these audit findings into a formal adjudication response:
@@ -120,26 +153,24 @@ def agent_resolution_node(state: AdjudicatorState) -> dict:
     response = llm.invoke(prompt)
     return {"final_decision": str(response.content)}
 
-
-# 7. Build the LangGraph StateGraph Pipeline
+# ---------------------------------------------------------
+# 8. Build the Pipeline
+# ---------------------------------------------------------
 def build_adjudication_graph():
     workflow = StateGraph(AdjudicatorState)
-
-    # Register Nodes
     workflow.add_node("intake_agent", agent_intake_node)
     workflow.add_node("auditor_agent", agent_auditor_node)
     workflow.add_node("resolution_agent", agent_resolution_node)
 
-    # Connect Edges: START -> Intake -> Auditor -> Resolution -> END
     workflow.add_edge(START, "intake_agent")
     workflow.add_edge("intake_agent", "auditor_agent")
     workflow.add_edge("auditor_agent", "resolution_agent")
     workflow.add_edge("resolution_agent", END)
-
     return workflow.compile()
 
-
-# 8. Main Form Interface
+# ---------------------------------------------------------
+# 9. Main User Interface
+# ---------------------------------------------------------
 default_claim = """Employee: Rahul Verma (Sales Lead)
 Submission Date: October 14, 2026
 Expenses:
