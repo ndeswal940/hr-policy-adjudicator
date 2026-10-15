@@ -145,13 +145,23 @@ def agent_resolution_node(state: AdjudicatorState) -> dict:
     Audit Findings:
     {state['audit_findings']}
 
+    CRITICAL FORMATTING INSTRUCTIONS:
+    - DO NOT use HTML tags under any circumstances (NO `<br>`, NO `<div>`, NO `<span>`).
+    - Use STRICT GitHub-flavored Markdown only.
+    - Ensure every bullet point starts on a fresh line with `- ` (with a space after the hyphen).
+    - In tables, keep cells clean and single-line. Do not stuff multi-line bullets inside table cells.
+
     Produce:
     1. Executive Status: (Approved / Partially Approved / Needs Revision)
-    2. Financial Breakdown Table: Columns for Item, Claimed, Approved, Disallowed, and Justification.
-    3. Employee Letter: A clear, polite email explaining the decision and what documentation is required to release pending balances.
+    2. Financial Breakdown Table:
+       | # | Item Description | Claimed | Approved | Disallowed | Justification |
+    3. Employee Letter: A clean, professional email explaining what was approved and what is required to release pending balances.
     """
     response = llm.invoke(prompt)
-    return {"final_decision": str(response.content)}
+    
+    # Post-process cleanup just in case the model emits any stray <br> tags
+    cleaned_content = str(response.content).replace("<br>", "\n").replace("<br/>", "\n")
+    return {"final_decision": cleaned_content}
 
 # ---------------------------------------------------------
 # 8. Build the Pipeline
