@@ -1,0 +1,19 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.env
+
+# Real Streamlit Secrets (DO NOT COMMIT)
+.streamlit/secrets.toml
+
+# ChromaDB binary data (rebuilt dynamically via rag_setup.py)
+chroma_db/
+
+# OS files
+.DS_Store
+Thumbs.db
